@@ -3,7 +3,8 @@
 // ============================================================
 import { MAP, Game } from './engine';
 import { unitSprite, mobSprite, tileSprite } from './assets';
-import type { Job } from './types';
+import { GRADES } from './config';
+import type { Job, Mob } from './types';
 
 const JOB_TINT: Record<Job, string> = { archer: '#3fae4a', wizard: '#8e5bd8', warrior: '#c9a13b' };
 
@@ -24,6 +25,7 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private game: Game;
   private t = 0; // 애니메이션 시계(초)
+  private bg: HTMLCanvasElement | null = null; // 타일 배경 캐시 (매 프레임 2백여 장 drawImage 방지)
 
   constructor(canvas: HTMLCanvasElement, game: Game) {
     this.ctx = canvas.getContext('2d')!;
@@ -37,12 +39,85 @@ export class Renderer {
     this.t = performance.now() / 1000;
     ctx.imageSmoothingEnabled = false; // 픽셀 아트 선명하게
     ctx.clearRect(0, 0, MAP.size, MAP.size);
-    this.drawTiles();
+    ctx.save();
+    const sh = this.game.shake;
+    if (sh > 0.2) ctx.translate((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh);
+    this.drawBackground();
     this.drawZones();
+    this.drawUnitAuras();
     this.drawMobs();
     this.drawUnits();
     this.drawEffects();
     this.drawDrag(); // 드래그 화살표는 최상단
+    ctx.restore();
+    this.drawBossBar();
+  }
+
+  // 타일 배경은 오프스크린에 한 번만 그려 재사용 (타일 로드 완료 후 캐시)
+  private drawBackground(): void {
+    if (this.bg) { this.ctx.drawImage(this.bg, 0, 0); return; }
+    const ready = tileSprite('grass').ready && tileSprite('dirt').ready;
+    if (!ready) { this.drawTiles(this.ctx); return; }
+    const c = document.createElement('canvas');
+    c.width = MAP.size; c.height = MAP.size;
+    const cx = c.getContext('2d')!;
+    cx.imageSmoothingEnabled = false;
+    this.drawTiles(cx);
+    this.decorate(cx);
+    this.bg = c;
+    this.ctx.drawImage(c, 0, 0);
+  }
+
+  // 배경 장식: 흙길 가장자리 그림자 + 필드 비네트
+  private decorate(cx: CanvasRenderingContext2D): void {
+    const o1 = PATH_INSET - BAND_HALF, i1 = PATH_INSET + BAND_HALF;
+    const S = MAP.size;
+    cx.save();
+    cx.strokeStyle = 'rgba(60,40,20,0.35)';
+    cx.lineWidth = 3;
+    cx.strokeRect(o1, o1, S - o1 * 2, S - o1 * 2);
+    cx.strokeRect(i1, i1, S - i1 * 2, S - i1 * 2);
+    const g = cx.createRadialGradient(S / 2, S / 2, S * 0.25, S / 2, S / 2, S * 0.75);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.28)');
+    cx.fillStyle = g;
+    cx.fillRect(0, 0, S, S);
+    cx.restore();
+  }
+
+  // 상단 보스 체력 바 (보스가 살아있을 때)
+  private drawBossBar(): void {
+    const boss = this.game.mobs.find((m) => m.boss);
+    if (!boss) return;
+    const ctx = this.ctx;
+    const w = MAP.size * 0.62, h = 16, x = (MAP.size - w) / 2, y = 14;
+    const ratio = Math.max(0, boss.hp / boss.maxHp);
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    this.roundRect(x - 3, y - 3, w + 6, h + 6, 8); ctx.fill();
+    const g = ctx.createLinearGradient(x, 0, x + w, 0);
+    g.addColorStop(0, '#ff3b3b'); g.addColorStop(1, '#ff9f43');
+    ctx.fillStyle = g;
+    this.roundRect(x, y, w * ratio, h, 6); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`BOSS  ${Math.ceil(ratio * 100)}%   ⏱ ${Math.max(0, this.game.bossTimer).toFixed(0)}s`, MAP.size / 2, y + h / 2 + 1);
+    ctx.restore();
+  }
+
+  private roundRect(x: number, y: number, w: number, h: number, r: number): void {
+    const ctx = this.ctx;
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    if (w <= 0) return;
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
   }
 
   // 시트에서 (col,row) 프레임을 (dx,dy) 에 size 크기로 그린다
@@ -62,8 +137,7 @@ export class Renderer {
   }
 
   // 잔디 필드 + 흙길 링을 타일로 그린다
-  private drawTiles(): void {
-    const ctx = this.ctx;
+  private drawTiles(ctx: CanvasRenderingContext2D): void {
     const grass = tileSprite('grass');
     const dirt = tileSprite('dirt');
     const n = Math.ceil(MAP.size / TILE);
@@ -183,27 +257,98 @@ export class Renderer {
     const ctx = this.ctx;
     for (const m of this.game.mobs) {
       const s = m.size;
+      // 발밑 그림자
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath(); ctx.ellipse(m.x, m.y + s * 0.38, s * 0.32, s * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+      this.drawMobAura(m);
       const spr = mobSprite(m.race);
       if (spr.ready) {
-        const col = m.pause > 0 ? 1 : this.walkCol(m.id * 0.07, 0.16); // 코너 정지 시 대기 프레임
-        if (m.hitFlash > 0) { ctx.save(); ctx.globalAlpha = 0.6; }
+        const period = m.kind === 'fast' ? 0.1 : m.kind === 'tank' ? 0.22 : 0.16;
+        const col = m.pause > 0 ? 1 : this.walkCol(m.id * 0.07, period); // 코너 정지 시 대기 프레임
+        ctx.save();
+        if (m.slow > 0) ctx.filter = 'hue-rotate(180deg) saturate(1.4)';      // 둔화: 푸른 톤
+        else if (m.kind === 'sent' || m.kind === 'elite') ctx.filter = 'sepia(0.6) saturate(2.5) hue-rotate(-30deg)'; // 상대가 보낸 몹: 붉은 톤
+        if (m.hitFlash > 0) ctx.globalAlpha = 0.65;
         this.frame(spr.img, col, m.dir, m.x - s / 2, m.y - s / 2, s);
-        if (m.hitFlash > 0) ctx.restore();
+        ctx.restore();
+        if (m.hitFlash > 0.06) {
+          // 피격 순간 흰 번쩍임
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.35;
+          this.frame(spr.img, col, m.dir, m.x - s / 2, m.y - s / 2, s);
+          ctx.restore();
+        }
       } else {
         ctx.fillStyle = m.boss ? '#b23' : '#357';
         ctx.beginPath(); ctx.arc(m.x, m.y, s / 2, 0, Math.PI * 2); ctx.fill();
       }
-      const w = s, h = 4;
+      const w = Math.max(28, s * 0.8), h = m.boss ? 6 : 4;
       const ratio = Math.max(0, m.hp / m.maxHp);
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(m.x - w / 2, m.y - s / 2 - 8, w, h);
-      ctx.fillStyle = m.boss ? '#ff5252' : '#7ee87e';
-      ctx.fillRect(m.x - w / 2, m.y - s / 2 - 8, w * ratio, h);
-      if (m.boss) {
-        ctx.fillStyle = '#ffd54f';
+      const by = m.y - s / 2 - 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(m.x - w / 2 - 1, by - 1, w + 2, h + 2);
+      ctx.fillStyle = m.boss ? '#ff5252' : m.kind === 'elite' || m.kind === 'sent' ? '#ff8a3d' : ratio > 0.5 ? '#7ee87e' : ratio > 0.25 ? '#ffd54f' : '#ff7b7b';
+      ctx.fillRect(m.x - w / 2, by, w * ratio, h);
+      if (m.boss || m.kind === 'elite') {
+        ctx.fillStyle = m.boss ? '#ffd54f' : '#ff8a3d';
         ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('BOSS', m.x, m.y - s / 2 - 12);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        const label = m.boss ? 'BOSS' : 'ELITE';
+        ctx.strokeText(label, m.x, by - 5);
+        ctx.fillText(label, m.x, by - 5);
+      }
+    }
+  }
+
+  // 몹 종류별 표식: 탱커=방패 링, 빠름=잔상 선, 보스=붉은 오라
+  private drawMobAura(m: Mob): void {
+    const ctx = this.ctx;
+    if (m.boss) {
+      const r = m.size * 0.55 + Math.sin(this.t * 4) * 3;
+      const g = ctx.createRadialGradient(m.x, m.y, r * 0.3, m.x, m.y, r);
+      g.addColorStop(0, 'rgba(255,60,60,0.0)');
+      g.addColorStop(1, 'rgba(255,60,60,0.35)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(m.x, m.y, r, 0, Math.PI * 2); ctx.fill();
+    } else if (m.kind === 'tank') {
+      ctx.strokeStyle = 'rgba(180,200,230,0.7)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(m.x, m.y + 2, m.size * 0.42, 0, Math.PI * 2); ctx.stroke();
+    } else if (m.kind === 'fast' && m.pause <= 0) {
+      const dx = m.dir === 1 ? 1 : m.dir === 2 ? -1 : 0;
+      const dy = m.dir === 0 ? -1 : m.dir === 3 ? 1 : 0;
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 2;
+      for (let i = -1; i <= 1; i++) {
+        const ox = dy !== 0 ? i * 8 : 0, oy = dx !== 0 ? i * 8 : 0;
+        ctx.beginPath();
+        ctx.moveTo(m.x + dx * 14 + ox, m.y + dy * 14 + oy);
+        ctx.lineTo(m.x + dx * 28 + ox, m.y + dy * 28 + oy);
+        ctx.stroke();
+      }
+    } else if (m.kind === 'elite') {
+      ctx.strokeStyle = `rgba(255,138,61,${0.5 + Math.sin(this.t * 6) * 0.25})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(m.x, m.y, m.size * 0.5, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  // 전설 이상 유닛 발밑 등급 오라 (유닛보다 먼저 그림)
+  private drawUnitAuras(): void {
+    const ctx = this.ctx;
+    for (const u of this.game.units) {
+      if (u.gradeIndex < 3) continue;
+      const color = GRADES[u.gradeIndex].color;
+      const pulse = 0.5 + Math.sin(this.t * 3 + u.id) * 0.2;
+      ctx.fillStyle = this.hexA(color, 0.28 * pulse + 0.1);
+      ctx.beginPath(); ctx.ellipse(u.x, u.y + 16, 22, 8, 0, 0, Math.PI * 2); ctx.fill();
+      if (u.gradeIndex >= 4) {
+        ctx.strokeStyle = this.hexA(color, 0.7 * pulse);
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(u.x, u.y + 16, 26, 10, 0, 0, Math.PI * 2); ctx.stroke();
       }
     }
   }
@@ -237,62 +382,187 @@ export class Renderer {
   private drawEffects(): void {
     const ctx = this.ctx;
     for (const e of this.game.effects) {
-      if (e.type === 'shot') {
-        ctx.strokeStyle = this.hexA(JOB_TINT[e.job], Math.max(0, e.ttl / 0.15));
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(e.x1, e.y1);
-        ctx.lineTo(e.x2, e.y2);
-        ctx.stroke();
-      } else if (e.type === 'pop') {
-        const r = (0.4 - e.ttl) * (e.boss ? 60 : 30) + 4;
-        ctx.strokeStyle = `rgba(255,240,150,${Math.max(0, e.ttl / 0.4)})`;
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, Math.PI * 2); ctx.stroke();
-      } else if (e.type === 'burst') {
-        // 태초 등급 타격 폭발: 확장 링 2겹 + 방사형 파편
-        const p = 1 - e.ttl / 0.45;                    // 0→1 진행
-        const alpha = Math.max(0, 1 - p);
-        const r = 8 + p * 46;
-        ctx.save();
-        // 바깥 링 (붉은 주황)
-        ctx.strokeStyle = `rgba(255,110,40,${alpha})`;
-        ctx.lineWidth = 4 * (1 - p) + 1;
-        ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, Math.PI * 2); ctx.stroke();
-        // 안쪽 링 (밝은 노랑, 반박자 늦게)
-        ctx.strokeStyle = `rgba(255,230,120,${alpha})`;
-        ctx.lineWidth = 2.5 * (1 - p) + 0.5;
-        ctx.beginPath(); ctx.arc(e.x, e.y, r * 0.55, 0, Math.PI * 2); ctx.stroke();
-        // 중심 섬광 (초반에만)
-        if (p < 0.35) {
-          ctx.fillStyle = `rgba(255,255,220,${(1 - p / 0.35) * 0.9})`;
-          ctx.beginPath(); ctx.arc(e.x, e.y, 10 * (1 - p / 0.35) + 2, 0, Math.PI * 2); ctx.fill();
+      switch (e.type) {
+        case 'proj': this.drawProj(e); break;
+        case 'pop': {
+          const life = e.boss ? 0.8 : 0.45;
+          const p = 1 - e.ttl / life;
+          const alpha = Math.max(0, 1 - p);
+          const r = p * (e.boss ? 70 : 26) + 4;
+          ctx.strokeStyle = `rgba(255,240,150,${alpha})`;
+          ctx.lineWidth = e.boss ? 5 : 3;
+          ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, Math.PI * 2); ctx.stroke();
+          // 파편
+          const n = e.boss ? 14 : 6;
+          ctx.fillStyle = `rgba(255,200,90,${alpha})`;
+          for (let i = 0; i < n; i++) {
+            const ang = e.seed + (i / n) * Math.PI * 2;
+            const d = 6 + p * (e.boss ? 80 : 30);
+            ctx.fillRect(e.x + Math.cos(ang) * d - 2, e.y + Math.sin(ang) * d - 2 + p * p * 12, 4, 4);
+          }
+          break;
         }
-        // 방사형 파편 6개
-        ctx.fillStyle = `rgba(255,170,60,${alpha})`;
-        for (let i = 0; i < 6; i++) {
-          const ang = e.seed + (i / 6) * Math.PI * 2;
-          const d = 10 + p * 40;
-          const size = 3.5 * (1 - p) + 0.5;
-          ctx.beginPath();
-          ctx.arc(e.x + Math.cos(ang) * d, e.y + Math.sin(ang) * d, size, 0, Math.PI * 2);
-          ctx.fill();
+        case 'splash': {
+          const p = 1 - e.ttl / 0.35;
+          const alpha = Math.max(0, 1 - p);
+          const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, e.r * (0.5 + p * 0.5));
+          g.addColorStop(0, `rgba(210,160,255,${0.45 * alpha})`);
+          g.addColorStop(1, 'rgba(142,91,216,0)');
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = `rgba(200,150,255,${alpha})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.4 + p * 0.6), 0, Math.PI * 2); ctx.stroke();
+          break;
         }
-        ctx.restore();
-      } else if (e.type === 'dmg') {
-        const p = 1 - e.ttl / 0.6;            // 0→1 진행
-        const alpha = Math.max(0, Math.min(1, e.ttl / 0.6 * 1.5));
-        ctx.globalAlpha = alpha;
-        ctx.font = 'bold 18px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.fillStyle = '#ffe066';
-        const ty = e.y - p * 26;
-        ctx.strokeText(String(e.value), e.x, ty);
-        ctx.fillText(String(e.value), e.x, ty);
-        ctx.globalAlpha = 1;
+        case 'slash': {
+          const p = 1 - e.ttl / 0.25;
+          ctx.save();
+          ctx.translate(e.x, e.y);
+          ctx.rotate(e.seed);
+          ctx.strokeStyle = `rgba(255,240,200,${1 - p})`;
+          ctx.lineWidth = 5 * (1 - p) + 1;
+          ctx.beginPath(); ctx.arc(0, 0, 22, -0.9 + p * 0.6, 0.9 + p * 0.6); ctx.stroke();
+          ctx.restore();
+          break;
+        }
+        case 'merge': {
+          const p = 1 - e.ttl / 0.7;
+          ctx.strokeStyle = this.hexA(e.color, 1 - p);
+          ctx.lineWidth = 4;
+          for (let k = 0; k < 2; k++) {
+            ctx.beginPath(); ctx.arc(e.x, e.y, 10 + p * (50 + k * 25), 0, Math.PI * 2); ctx.stroke();
+          }
+          ctx.fillStyle = this.hexA(e.color, (1 - p) * 0.8);
+          for (let i = 0; i < 8; i++) {
+            const ang = (i / 8) * Math.PI * 2 + p * 2;
+            const d = 40 * (1 - p);
+            ctx.beginPath(); ctx.arc(e.x + Math.cos(ang) * d, e.y + Math.sin(ang) * d, 3, 0, Math.PI * 2); ctx.fill();
+          }
+          break;
+        }
+        case 'summon': {
+          const p = 1 - e.ttl / 0.5;
+          // 기둥 빛
+          const h = (e.big ? 120 : 70) * (1 - p * 0.5);
+          const g = ctx.createLinearGradient(0, e.y - h, 0, e.y + 16);
+          g.addColorStop(0, this.hexA(e.color, 0));
+          g.addColorStop(1, this.hexA(e.color, 0.55 * (1 - p)));
+          ctx.fillStyle = g;
+          ctx.fillRect(e.x - (e.big ? 18 : 12), e.y - h, e.big ? 36 : 24, h + 16);
+          ctx.strokeStyle = this.hexA(e.color, 1 - p);
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(e.x, e.y + 16, 10 + p * 22, 4 + p * 8, 0, 0, Math.PI * 2); ctx.stroke();
+          break;
+        }
+        case 'burst': this.drawBurst(e); break;
+        case 'dmg': {
+          const p = 1 - e.ttl / 0.7;            // 0→1 진행
+          const alpha = Math.max(0, Math.min(1, (e.ttl / 0.7) * 1.6));
+          ctx.globalAlpha = alpha;
+          const size = e.crit ? 24 + (p < 0.15 ? (0.15 - p) * 60 : 0) : 17;
+          ctx.font = `bold ${size}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+          ctx.fillStyle = e.crit ? '#ff6b3d' : '#ffe066';
+          const ty = e.y - p * 28;
+          const text = e.crit ? `${this.short(e.value)}!` : this.short(e.value);
+          ctx.strokeText(text, e.x, ty);
+          ctx.fillText(text, e.x, ty);
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case 'gold': {
+          const p = 1 - e.ttl / 0.8;
+          ctx.globalAlpha = Math.max(0, 1 - p * p);
+          ctx.font = 'bold 15px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+          ctx.fillStyle = '#ffcf3f';
+          const ty = e.y - 14 - p * 22;
+          ctx.strokeText(`+${e.value}🪙`, e.x, ty);
+          ctx.fillText(`+${e.value}🪙`, e.x, ty);
+          ctx.globalAlpha = 1;
+          break;
+        }
       }
     }
+  }
+
+  // 큰 수 축약 (12.3K, 4.5M)
+  private short(v: number): string {
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e4) return (v / 1e3).toFixed(1) + 'K';
+    return String(v);
+  }
+
+  // 직업별 투사체: 궁수=화살, 마법사=마력구, 전사=검기
+  private drawProj(e: Extract<import('./types').Effect, { type: 'proj' }>): void {
+    const ctx = this.ctx;
+    const p = 1 - e.ttl / e.dur; // 0→1 비행 진행
+    const x = e.x1 + (e.x2 - e.x1) * p;
+    const y = e.y1 + (e.y2 - e.y1) * p;
+    const ang = Math.atan2(e.y2 - e.y1, e.x2 - e.x1);
+    const color = GRADES[e.grade]?.color ?? '#fff';
+    ctx.save();
+    if (e.job === 'archer') {
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.strokeStyle = this.hexA(color, 0.5);
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-22, 0); ctx.lineTo(-6, 0); ctx.stroke(); // 궤적
+      ctx.strokeStyle = '#f5e6c8';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(6, 0); ctx.stroke();
+      ctx.fillStyle = '#ddd';
+      ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(3, -3); ctx.lineTo(3, 3); ctx.closePath(); ctx.fill();
+    } else if (e.job === 'wizard') {
+      const r = 5 + e.grade * 0.8;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.2);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.35, this.hexA(color === '#b8b8b8' ? '#8e5bd8' : color, 0.85));
+      g.addColorStop(1, 'rgba(142,91,216,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.translate(x, y);
+      ctx.rotate(ang);
+      ctx.strokeStyle = this.hexA(color === '#b8b8b8' ? '#f0d080' : color, 0.9);
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.arc(-6, 0, 12, -1.1, 1.1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawBurst(e: Extract<import('./types').Effect, { type: 'burst' }>): void {
+    const ctx = this.ctx;
+    // 태초 등급 타격 폭발: 확장 링 2겹 + 방사형 파편
+    const p = 1 - e.ttl / 0.45;                    // 0→1 진행
+    const alpha = Math.max(0, 1 - p);
+    const r = 8 + p * 46;
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,110,40,${alpha})`;
+    ctx.lineWidth = 4 * (1 - p) + 1;
+    ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,230,120,${alpha})`;
+    ctx.lineWidth = 2.5 * (1 - p) + 0.5;
+    ctx.beginPath(); ctx.arc(e.x, e.y, r * 0.55, 0, Math.PI * 2); ctx.stroke();
+    if (p < 0.35) {
+      ctx.fillStyle = `rgba(255,255,220,${(1 - p / 0.35) * 0.9})`;
+      ctx.beginPath(); ctx.arc(e.x, e.y, 10 * (1 - p / 0.35) + 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = `rgba(255,170,60,${alpha})`;
+    for (let i = 0; i < 6; i++) {
+      const ang = e.seed + (i / 6) * Math.PI * 2;
+      const d = 10 + p * 40;
+      const size = 3.5 * (1 - p) + 0.5;
+      ctx.beginPath();
+      ctx.arc(e.x + Math.cos(ang) * d, e.y + Math.sin(ang) * d, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 }

@@ -61,8 +61,9 @@ export const WAVE = {
   mobsPerWave: 40,
   hpBase: 100,
   // 기획서 원안은 +20%(지수)였으나, 그 값으로는 유닛 파워(선형)가 따라잡지 못해
-  // 50웨이브 클리어가 수학적으로 불가능. 하드코어(연구 필수) 곡선을 위해 +11% 로 완화.
-  hpGrowthPerWave: 0.11,
+  // 50웨이브 클리어가 수학적으로 불가능. 하드코어(연구 필수) 곡선을 위해 완화.
+  // 합성/직업 스킬 추가로 유닛 파워가 오른 만큼 +11% → +11.5% 로 재조정 (tools/simulate.ts).
+  hpGrowthPerWave: 0.115,
   mobSpeed: 1.2,
   cornerPause: 0.25,
   restBetween: 5.0,
@@ -73,6 +74,67 @@ export const WAVE = {
   bossHpMult: 25,
   bossSizeMult: 2,
 } as const;
+
+// ---------- 몹 종류 (웨이브 구성 다양화) ----------
+// fast: 빠르고 약함 / tank: 느리고 단단함. 등장 시작 웨이브와 간격(n번째 몹마다)
+export const MOB_KINDS = {
+  fast: { hpMult: 0.6, speedMult: 1.6, sizeMult: 0.85, fromWave: 4, every: 5 },
+  tank: { hpMult: 2.6, speedMult: 0.72, sizeMult: 1.25, fromWave: 11, every: 9 },
+} as const;
+
+// ---------- 직업 스킬 (정예 등급 이상에서 발동) ----------
+export const SKILL_FROM_INDEX = 2; // 정예(index 2) 이상
+export const SKILLS = {
+  // 궁수: 다중 사격 - 추가 대상 n명에게 비율 피해 (전설 이상 +1명)
+  archer: { extraTargets: 1, extraTargetsHigh: 2, ratio: 0.5 },
+  // 마법사: 폭발 - 대상 주변 반경 피해
+  wizard: { radius: 62, radiusHigh: 86, ratio: 0.35 },
+  // 전사: 둔화 - 대상 이동 속도 감소
+  warrior: { slowPct: 0.25, slowPctHigh: 0.38, dur: 1.1 },
+  // 공통 치명타
+  critChance: 0.1,
+  critMult: 2,
+} as const;
+export const SKILL_KR: Record<Job, string> = {
+  archer: '다중 사격', wizard: '마력 폭발', warrior: '둔화 강타',
+};
+export const SKILL_DESC: Record<Job, string> = {
+  archer: '정예+: 주변 적 1명(전설+ 2명)에게 50% 추가 피해',
+  wizard: '정예+: 대상 주변 범위에 35% 폭발 피해',
+  warrior: '정예+: 대상 이동속도 25%(전설+ 38%) 감소',
+};
+
+// ---------- 합성 (같은 직업·등급 3개 → 상위 등급 1개) ----------
+export const MERGE_COUNT = 3;
+
+// ---------- PvP ----------
+export const PVP = {
+  // 몹 보내기: [몹 무리, 정예 몹]
+  attacks: [
+    { kr: '몹 무리', cost: 40, count: 6, hpMult: 0.9 },
+    { kr: '정예 몹', cost: 160, count: 1, hpMult: 14 },
+  ],
+  reportInterval: 0.5,   // 상태 보고 주기(초)
+  matchTimeout: 25,      // 매칭 대기 최대(초) → 초과 시 AI 대전 제안
+  trophyWin: 30,
+  trophyLoss: 20,
+  rewardWin: 40,         // 크리스탈
+  rewardLoss: 10,
+  seasonXpWin: 100,
+  seasonXpLoss: 40,
+} as const;
+
+// ---------- 시드 RNG (PvP 양쪽이 같은 웨이브를 보도록) ----------
+export function makeRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // ---------- 소환 확률 도우미 ----------
 export function rollGrade(rareBonus = 0): GradeKey {

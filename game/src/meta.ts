@@ -4,10 +4,19 @@
 // ============================================================
 import { RESEARCH, DAILY_QUESTS, ACHIEVEMENTS } from './config';
 import { getPlatform } from './platform';
-import type { MetaData, ResearchKey, QuestStat, AchievementDef } from './types';
+import type { MetaData, ResearchKey, QuestStat, AchievementDef, ItemKey } from './types';
 
-function todayStr(): string {
+export function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+// PvP 시즌 id (월 단위 시즌: 2026-10 → "S2026-10")
+export function currentSeasonId(now = new Date()): string {
+  return `S${now.toISOString().slice(0, 7)}`;
+}
+
+function freshSeason(): MetaData['season'] {
+  return { id: currentSeasonId(), xp: 0, premium: false, claimedFree: [], claimedPremium: [] };
 }
 
 function freshMeta(): MetaData {
@@ -21,6 +30,12 @@ function freshMeta(): MetaData {
       claimed: Object.fromEntries(DAILY_QUESTS.map((q) => [q.key, false])),
     },
     bestWave: 0,
+    items: { summonTicket: 0, mythicTicket: 0, goldBooster: 0 },
+    season: freshSeason(),
+    monthly: { expires: 0, lastClaim: '' },
+    grantedPurchases: [],
+    oneTime: {},
+    pvp: { trophies: 0, wins: 0, losses: 0, streak: 0 },
   };
 }
 
@@ -34,6 +49,13 @@ function load(): MetaData {
   const fresh = freshMeta();
   m.research = Object.assign(fresh.research, m.research || {});
   m.achievements = Object.assign(fresh.achievements, m.achievements || {});
+  m.items = Object.assign(fresh.items, m.items || {});
+  m.monthly = Object.assign(fresh.monthly, m.monthly || {});
+  m.pvp = Object.assign(fresh.pvp, m.pvp || {});
+  m.oneTime = m.oneTime || {};
+  m.grantedPurchases = Array.isArray(m.grantedPurchases) ? m.grantedPurchases : [];
+  // 시즌이 바뀌면 시즌 패스 진행 초기화 (프리미엄은 시즌 단위 상품)
+  if (!m.season || m.season.id !== currentSeasonId()) m.season = fresh.season;
   if (!m.daily || m.daily.date !== todayStr()) {
     m.daily = fresh.daily; // 날짜 바뀌면 일일 퀘스트 초기화
   } else {
@@ -74,4 +96,16 @@ export function unlockAchievement(key: string): AchievementDef | null {
   meta.crystals += a.reward;
   saveMeta();
   return a;
+}
+
+export function addItem(key: ItemKey, n: number): void {
+  meta.items[key] = Math.max(0, (meta.items[key] || 0) + n);
+}
+
+/** 아이템 1개 사용. 부족하면 false */
+export function useItem(key: ItemKey): boolean {
+  if ((meta.items[key] || 0) <= 0) return false;
+  meta.items[key] -= 1;
+  saveMeta();
+  return true;
 }

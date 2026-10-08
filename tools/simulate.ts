@@ -5,13 +5,15 @@
 // ============================================================
 import { Game } from '../game/src/engine';
 import { meta } from '../game/src/meta';
-import { WAVE, ECONOMY, RESEARCH_PER } from '../game/src/config';
+import { WAVE, ECONOMY, RESEARCH_PER, GRADE_INDEX } from '../game/src/config';
 import type { ResearchKey } from '../game/src/types';
 
 // 실험용 런타임 오버라이드 (config 는 as const 지만 런타임 객체는 가변)
 const W = WAVE as { hpGrowthPerWave: number };
 const E = ECONOMY as { upgradePerLevel: number };
-const BASE_HP_GROWTH = WAVE.hpGrowthPerWave;
+// 환경변수로 HP 성장률 실험: SIM_HPG=0.12 npx tsx tools/simulate.ts
+if (process.env.SIM_HPG) W.hpGrowthPerWave = Number(process.env.SIM_HPG);
+const BASE_HP_GROWTH = W.hpGrowthPerWave;
 const BASE_UP = ECONOMY.upgradePerLevel;
 
 // 연구 효과 강도 스케일 적용 (atk/goldGain/startGold/boss 를 배수만큼 강화)
@@ -45,8 +47,17 @@ function tryUpgrade(game: Game): boolean {
   return false;
 }
 
+// 합성 가능한 조합이 있으면 합성 (낮은 등급부터)
+const MERGE = process.env.SIM_MERGE !== '0';
+function tryMerge(game: Game): boolean {
+  if (!MERGE) return false;
+  const m = game.mergeable().sort((a, b) => GRADE_INDEX[a.grade] - GRADE_INDEX[b.grade])[0];
+  return !!(m && game.merge(m.job, m.grade));
+}
+
 function autoPlay(game: Game, armyTarget: number): void {
   const SUMMON = 20;
+  if (tryMerge(game)) return;
   if (game.units.length < armyTarget) {
     if (game.gold >= SUMMON) game.summon();
     return;

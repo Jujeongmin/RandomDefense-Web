@@ -78,11 +78,11 @@ export class UI {
     if (!import.meta.env.DEV) return;
     $('debug-panel').classList.remove('hidden');
     $('debug-mythic').onclick = () => {
-      const u = this.game.summonDebug('mythic');
+      const u = this.game.summonFree('mythic');
       if (u) audio.summon(true);
     };
     $('debug-eternal').onclick = () => {
-      const u = this.game.summonDebug('eternal');
+      const u = this.game.summonFree('eternal');
       if (u) audio.summon(true);
     };
   }
