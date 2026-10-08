@@ -3,10 +3,13 @@
 // ============================================================
 import { MAP, Game } from './engine';
 import { unitSprite, mobSprite, tileSprite } from './assets';
-import { GRADES } from './config';
+import { GRADES, UNIT_BY_ID } from './config';
 import type { Job, Mob } from './types';
 
-const JOB_TINT: Record<Job, string> = { archer: '#3fae4a', wizard: '#8e5bd8', warrior: '#c9a13b' };
+const JOB_TINT: Record<Job, string> = {
+  archer: '#3fae4a', wizard: '#8e5bd8', warrior: '#c9a13b', ranger: '#3fa7c9',
+  frost: '#7fe0ff', paladin: '#ffd54f', bomber: '#ff7a3d', assassin: '#a35bd8',
+};
 
 // 스프라이트 시트: 32x32 프레임, 3열(걷기) x 4행(하/좌/우/상)
 const FRAME = 32;
@@ -266,11 +269,14 @@ export class Renderer {
         const period = m.kind === 'fast' ? 0.1 : m.kind === 'tank' ? 0.22 : 0.16;
         const col = m.pause > 0 ? 1 : this.walkCol(m.id * 0.07, period); // 코너 정지 시 대기 프레임
         ctx.save();
-        if (m.slow > 0) ctx.filter = 'hue-rotate(180deg) saturate(1.4)';      // 둔화: 푸른 톤
-        else if (m.kind === 'sent' || m.kind === 'elite') ctx.filter = 'sepia(0.6) saturate(2.5) hue-rotate(-30deg)'; // 상대가 보낸 몹: 붉은 톤
         if (m.hitFlash > 0) ctx.globalAlpha = 0.65;
         this.frame(spr.img, col, m.dir, m.x - s / 2, m.y - s / 2, s);
         ctx.restore();
+        // 상태 색 덧칠 (ctx.filter 는 사파리 미지원이라 source-atop 대신 반투명 원으로 표시)
+        if (m.slow > 0 || m.kind === 'sent' || m.kind === 'elite') {
+          ctx.fillStyle = m.slow > 0 ? 'rgba(120,200,255,0.28)' : 'rgba(255,70,40,0.22)';
+          ctx.beginPath(); ctx.arc(m.x, m.y, s * 0.36, 0, Math.PI * 2); ctx.fill();
+        }
         if (m.hitFlash > 0.06) {
           // 피격 순간 흰 번쩍임
           ctx.save();
@@ -406,11 +412,11 @@ export class Renderer {
           const p = 1 - e.ttl / 0.35;
           const alpha = Math.max(0, 1 - p);
           const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, e.r * (0.5 + p * 0.5));
-          g.addColorStop(0, `rgba(210,160,255,${0.45 * alpha})`);
-          g.addColorStop(1, 'rgba(142,91,216,0)');
+          g.addColorStop(0, this.hexA(e.color, 0.45 * alpha));
+          g.addColorStop(1, this.hexA(e.color, 0));
           ctx.fillStyle = g;
           ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = `rgba(200,150,255,${alpha})`;
+          ctx.strokeStyle = this.hexA(e.color, alpha);
           ctx.lineWidth = 2;
           ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.4 + p * 0.6), 0, Math.PI * 2); ctx.stroke();
           break;
@@ -505,9 +511,10 @@ export class Renderer {
     const x = e.x1 + (e.x2 - e.x1) * p;
     const y = e.y1 + (e.y2 - e.y1) * p;
     const ang = Math.atan2(e.y2 - e.y1, e.x2 - e.x1);
-    const color = GRADES[e.grade]?.color ?? '#fff';
+    const color = e.grade === 0 ? JOB_TINT[e.job] : GRADES[e.grade]?.color ?? '#fff';
+    const base = UNIT_BY_ID[e.job].base;
     ctx.save();
-    if (e.job === 'archer') {
+    if (base === 'archer') {
       ctx.translate(x, y);
       ctx.rotate(ang);
       ctx.strokeStyle = this.hexA(color, 0.5);
@@ -518,18 +525,18 @@ export class Renderer {
       ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(6, 0); ctx.stroke();
       ctx.fillStyle = '#ddd';
       ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(3, -3); ctx.lineTo(3, 3); ctx.closePath(); ctx.fill();
-    } else if (e.job === 'wizard') {
-      const r = 5 + e.grade * 0.8;
+    } else if (base === 'wizard') {
+      const r = (e.job === 'bomber' ? 8 : 5) + e.grade * 0.8;
       const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.2);
       g.addColorStop(0, 'rgba(255,255,255,0.95)');
-      g.addColorStop(0.35, this.hexA(color === '#b8b8b8' ? '#8e5bd8' : color, 0.85));
+      g.addColorStop(0.35, this.hexA(color, 0.85));
       g.addColorStop(1, 'rgba(142,91,216,0)');
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
     } else {
       ctx.translate(x, y);
       ctx.rotate(ang);
-      ctx.strokeStyle = this.hexA(color === '#b8b8b8' ? '#f0d080' : color, 0.9);
+      ctx.strokeStyle = this.hexA(color, 0.9);
       ctx.lineWidth = 4;
       ctx.lineCap = 'round';
       ctx.beginPath(); ctx.arc(-6, 0, 12, -1.1, 1.1); ctx.stroke();

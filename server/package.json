@@ -1,0 +1,16 @@
+{
+  "name": "randomdefense-gameserver",
+  "version": "0.1.0",
+  "description": "Random Defense - Verse8(Agent8) GameServer: PvP matchmaking/rooms, rankings, VX Shop purchase delivery, cloud save",
+  "private": true,
+  "scripts": {
+    "build": "gameserver-node build",
+    "build:dev": "gameserver-node build --no-minify",
+    "test": "gameserver-node test",
+    "test:dev": "gameserver-node test --no-minify",
+    "dev": "gameserver-node dev"
+  },
+  "devDependencies": {
+    "@agent8/gameserver-node": "^2.0.1"
+  }
+}

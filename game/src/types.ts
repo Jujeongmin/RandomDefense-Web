@@ -1,7 +1,9 @@
 // ============================================================
 //  공용 타입 정의
 // ============================================================
-export type Job = 'archer' | 'wizard' | 'warrior';
+// 유닛 종류 (기본 3종 + 해금 5종). 스프라이트는 base 3종 시트를 색조 변형해 사용
+export type Job = 'archer' | 'wizard' | 'warrior' | 'ranger' | 'frost' | 'paladin' | 'assassin' | 'bomber';
+export type BaseJob = 'archer' | 'wizard' | 'warrior';
 export type Race = 'troll' | 'orc' | 'undead';
 export type GradeKey = 'common' | 'rare' | 'elite' | 'legendary' | 'mythic' | 'eternal';
 
@@ -94,7 +96,7 @@ export type Effect =
   | { type: 'pop'; x: number; y: number; ttl: number; boss: boolean; seed: number }
   | { type: 'dmg'; x: number; y: number; ttl: number; value: number; crit: boolean }
   | { type: 'gold'; x: number; y: number; ttl: number; value: number }
-  | { type: 'splash'; x: number; y: number; ttl: number; r: number }
+  | { type: 'splash'; x: number; y: number; ttl: number; r: number; color: string }
   | { type: 'slash'; x: number; y: number; ttl: number; seed: number }
   | { type: 'merge'; x: number; y: number; ttl: number; color: string }
   | { type: 'summon'; x: number; y: number; ttl: number; color: string; big: boolean }
@@ -143,6 +145,8 @@ export interface GameOverData {
   reason: string;
   cleared: boolean;
   pvp?: { won: boolean };
+  /** 판 도중 필드 몹 최대치 (별 판정) */
+  peakMobs: number;
 }
 
 // 게임 모드/옵션 - solo(일반) 와 pvp(실시간 1:1) 가 같은 엔진을 공유한다
@@ -155,6 +159,20 @@ export interface GameOptions {
   useResearch: boolean;
   /** 시작 골드 배수 (골드 부스터) */
   startGoldMult: number;
+  /** 퀘스트/업적/최고기록 반영 여부 (AI 상대의 헤드리스 게임은 false) */
+  track: boolean;
+  /** 출전 덱 - 소환 시 이 중에서 랜덤 */
+  deck: Job[];
+  /** 유닛 영구 레벨 (컬렉션 성장) */
+  unitLevels: Partial<Record<Job, number>>;
+  /** 웨이브 수 (0 = 기본 50, PvP 는 무한) */
+  waves: number;
+  /** 몹 체력 배수 (스테이지 난이도) */
+  hpMult: number;
+  /** 등장 종족 제한 (없으면 전체) */
+  races?: Race[];
+  /** 캠페인 스테이지 id (없으면 무한/PvP) */
+  stageId?: string;
 }
 
 // PvP: 상대에게 보내는 공격 묶음
@@ -185,28 +203,48 @@ export interface MetaData {
   /** 결제 처리 완료된 구매 id (중복 지급 방지) */
   grantedPurchases: string[];
   /** 1회 한정 상품 구매 여부 */
-  oneTime: Record<string, boolean>;
+  oneTime: Record<string, boolean | number>;
   pvp: { trophies: number; wins: number; losses: number; streak: number };
+  /** 해금한 유닛과 영구 레벨 (없으면 미해금) */
+  units: Partial<Record<Job, number>>;
+  /** 출전 덱 (최대 4 = 배치 구역 수) */
+  deck: Job[];
+  /** 캠페인 스테이지별 별 개수 ("1-3": 2) */
+  stages: Record<string, number>;
+  /** 튜토리얼 완료 단계 */
+  tutorial: number;
+  nick: string;
+  adRemoved: boolean;
 }
 
 // ============================================================
 //  플랫폼 추상화 (Verse8 SDK 교체 지점)
-//  - 지금은 LocalPlatform(localStorage) 구현만 사용
-//  - 추후 Verse8Platform 이 같은 인터페이스를 구현해 setPlatform() 으로 교체
+//  - LocalPlatform: localStorage + 데모 VX (개발/오프라인)
+//  - Verse8Platform: 게임서버(계정 저장) + VX Shop 결제
 // ============================================================
+/** 결제 완료되어 지급 대기 중인 구매 */
+export interface PurchaseRecord {
+  purchaseId: string;
+  productId: string;
+  quantity: number;
+}
+
 export interface PlatformAdapter {
+  readonly kind: 'local' | 'verse8';
+  /** 비동기 초기화 (서버 저장 데이터 로드 등) */
+  init(): Promise<void>;
   /** 저장된 메타 로드 (없으면 null) */
   loadMeta(): Partial<MetaData> | null;
   /** 메타 영구 저장 */
   saveMeta(m: MetaData): void;
-  /** 광고제거 패키지 보유 여부 (3배속 해금 조건) */
-  isAdRemoved(): boolean;
-  /** 광고제거 패키지 소유 등록 (VX 차감 후 호출) */
-  purchaseAdRemoval(): Promise<boolean>;
-  /** 보유 VX (Verse8 플랫폼 재화) */
-  getVX(): number;
-  /** VX 차감 (부족하면 false). 실제 결제/충전은 Verse8Platform 에서 */
-  spendVX(amount: number): Promise<boolean>;
+  /** 보유 VX (로컬 데모만 알 수 있음, Verse8 은 null → 결제창에서 확인) */
+  getVX(): number | null;
+  /** 상품 가격 (VX Shop 에 등록된 가격, 모르면 null) */
+  priceOf(productId: string): number | null;
+  /** 결제 시작. 결제창이 닫힐 때 결제 여부를 resolve */
+  buy(productId: string): Promise<boolean>;
+  /** 결제 완료됐지만 아직 지급하지 않은 구매 목록을 가져오고 비운다 */
+  claimPurchases(): Promise<PurchaseRecord[]>;
   /** 계정 식별자 (로컬은 null) */
   accountId(): string | null;
 }

@@ -5,7 +5,8 @@
 import {
   ECONOMY, WAVE, GRADES, GRADE_BY_KEY, GRADE_INDEX, GRADE_RANGE,
   DMG_MULT, RACES, JOB_KR, FULL_RANGE_FROM_INDEX, RESEARCH_PER,
-  MOB_KINDS, SKILLS, SKILL_FROM_INDEX, MERGE_COUNT, PVP,
+  MOB_KINDS, SKILLS, SKILL_FROM_INDEX, MERGE_COUNT, PVP, UNIT_BY_ID, STARTER_UNITS,
+  UNIT_LEVEL_ATK, perkMult,
   rollGrade, rollJob, makeRng,
 } from './config';
 import {
@@ -55,6 +56,11 @@ export const DEFAULT_OPTIONS: GameOptions = {
   seed: 0,
   useResearch: true,
   startGoldMult: 1,
+  track: true,
+  deck: STARTER_UNITS,
+  unitLevels: {},
+  waves: 0,
+  hpMult: 1,
 };
 
 // PvP 상대 화면 미니맵용 상태 요약
@@ -117,6 +123,7 @@ export class Game {
   shake = 0;                      // 화면 흔들림 세기 (렌더러가 감쇠 표시)
   time = 0;                       // 게임 경과 시간(배속 반영)
   sentCount = 0;                  // PvP: 보낸 공격 수
+  peakMobs = 0;                   // 필드 몹 최대치 (별 판정)
   private pending: { kind: MobKind; hp: number; delay: number }[] = []; // PvP: 도착 대기 몹
   private rng: () => number = Math.random;
   private _listeners: { [K in EventName]?: Listener<K>[] } = {};
@@ -128,6 +135,8 @@ export class Game {
   }
 
   get isPvp(): boolean { return this.opts.mode === 'pvp'; }
+  /** 이 판의 총 웨이브 수 (PvP 는 무한 → Infinity) */
+  get totalWaves(): number { return this.isPvp ? Infinity : this.opts.waves || WAVE.total; }
 
   /** 연구 레벨 (PvP 등 연구 미적용 모드에서는 0) */
   res(key: ResearchKey): number {
@@ -166,6 +175,7 @@ export class Game {
     this.shake = 0;
     this.time = 0;
     this.sentCount = 0;
+    this.peakMobs = 0;
     this.pending = [];
     this._listeners = {};
   }
@@ -180,21 +190,25 @@ export class Game {
   // ---------------- 웨이브 ----------------
   startNextWave(): void {
     this.wave += 1;
-    if (this.wave > WAVE.total && !this.isPvp) { this.win(); return; } // PvP 는 무한 웨이브
-    this.currentRace = RACES[Math.floor(this.rng() * RACES.length)];
-    this.isBossWave = this.wave % WAVE.bossEvery === 0;
+    if (this.wave > this.totalWaves) { this.win(); return; } // PvP 는 무한 웨이브
+    const pool = this.opts.races?.length ? this.opts.races : RACES;
+    this.currentRace = pool[Math.floor(this.rng() * pool.length)];
+    // 10웨이브마다 + 스테이지 마지막 웨이브는 보스
+    this.isBossWave = this.wave % WAVE.bossEvery === 0 || this.wave === this.totalWaves;
     this.spawnedCount = 0;
     this.spawnTimer = 0;
     this.waveState = 'spawning';
     this.spawnGoal = this.isBossWave ? 1 : WAVE.mobsPerWave;
     if (this.isBossWave) this.bossTimer = WAVE.bossTimeLimit;
-    setDailyBestWave(this.wave);
-    if (this.wave > meta.bestWave) meta.bestWave = this.wave;
+    if (this.opts.track && !this.isPvp) {
+      setDailyBestWave(this.wave);
+      if (this.wave > meta.bestWave) meta.bestWave = this.wave;
+    }
     this.emit('wave', this.wave);
   }
 
   baseHp(wave = this.wave): number {
-    return WAVE.hpBase * Math.pow(1 + WAVE.hpGrowthPerWave, Math.max(0, wave - 1));
+    return WAVE.hpBase * this.opts.hpMult * Math.pow(1 + WAVE.hpGrowthPerWave, Math.max(0, wave - 1));
   }
 
   waveHp(): number {
@@ -318,11 +332,11 @@ export class Game {
     if (this.gold < ECONOMY.summonCost || this.over) return null;
     this.gold -= ECONOMY.summonCost;
     this.summons += 1;
-    addDailyProgress('summons', 1);
+    this.progress('summons');
 
     const rareBonus = this.res('rare') * RESEARCH_PER.rare;
     const gradeKey = rollGrade(rareBonus);
-    const job = rollJob();
+    const job = rollJob(this.opts.deck);
     return this.createUnit(job, gradeKey);
   }
 
@@ -331,9 +345,9 @@ export class Game {
   summonFree(gradeKey?: GradeKey): Unit | null {
     if (this.over) return null;
     this.summons += 1;
-    addDailyProgress('summons', 1);
+    this.progress('summons');
     const g = gradeKey ?? rollGrade(this.res('rare') * RESEARCH_PER.rare);
-    return this.createUnit(rollJob(), g);
+    return this.createUnit(rollJob(this.opts.deck), g);
   }
 
   // ---------------- 합성 ----------------
@@ -416,12 +430,17 @@ export class Game {
     return unit;
   }
 
+  private progress(stat: 'summons' | 'sells' | 'kills'): void {
+    if (this.opts.track) addDailyProgress(stat, 1);
+  }
+
   pushLog(text: string): void {
     this.log.unshift({ text, ttl: 10 });
     if (this.log.length > 6) this.log.pop();
   }
 
   tryAchieve(key: string): void {
+    if (!this.opts.track) return;
     const a = unlockAchievement(key);
     if (a) this.emit('achievement', a);
   }
@@ -449,7 +468,7 @@ export class Game {
     this.gold += grade.sellGold;
     const [removed] = this.units.splice(idx, 1);
     this.sells += 1;
-    addDailyProgress('sells', 1);
+    this.progress('sells');
     // 구역이 비면 직업 해제 (남은 유닛은 각자 위치 유지)
     if (!this.units.some((u) => u.zoneId === removed.zoneId)) {
       const z = this.zones.find((z) => z.id === removed.zoneId);
@@ -533,14 +552,23 @@ export class Game {
   // ---------------- 전투 헬퍼 ----------------
   unitLevel(u: Unit): number { return this.levels[u.job] || 1; }
 
-  unitRange(u: { gradeIndex: number }): number {
-    return u.gradeIndex >= FULL_RANGE_FROM_INDEX ? Infinity : GRADE_RANGE[u.gradeIndex];
+  unitRange(u: { gradeIndex: number; job: Job }): number {
+    return u.gradeIndex >= FULL_RANGE_FROM_INDEX ? Infinity : GRADE_RANGE[u.gradeIndex] * UNIT_BY_ID[u.job].rangeMult;
   }
 
-  unitDamage(u: Unit, mob: { race: Race; boss: boolean }): number {
+  /** 컬렉션(영구) 레벨 */
+  collectionLevel(job: Job): number { return this.opts.unitLevels[job] || 1; }
+
+  unitDamage(u: Unit, mob: { race: Race; boss: boolean; kind?: MobKind }): number {
     const level = this.unitLevel(u);
     let dmg = u.baseAtk * (1 + (level - 1) * ECONOMY.upgradePerLevel);
+    dmg *= UNIT_BY_ID[u.job].atkMult * (1 + (this.collectionLevel(u.job) - 1) * UNIT_LEVEL_ATK);
     dmg *= DMG_MULT[u.job][mob.race];
+    // 성기사: 보스/정예 특화
+    if (u.job === 'paladin' && u.gradeIndex >= SKILL_FROM_INDEX && (mob.boss || mob.kind === 'elite')) {
+      const m = u.gradeIndex >= FULL_RANGE_FROM_INDEX ? SKILLS.paladin.bossMultHigh : SKILLS.paladin.bossMult;
+      dmg *= 1 + (m - 1) * perkMult(this.collectionLevel(u.job));
+    }
     dmg *= 1 + this.res('atk') * RESEARCH_PER.atk;
     if (mob.boss) dmg *= 1 + this.res('boss') * RESEARCH_PER.boss;
     return dmg;
@@ -571,6 +599,7 @@ export class Game {
     this.updateCombat(dt);
     this.updateEffects(dt);
 
+    if (this.mobs.length > this.peakMobs) this.peakMobs = this.mobs.length;
     if (this.mobs.length >= WAVE.gameOverMobCount) this.gameOver('몹이 100마리를 넘었습니다');
   }
 
@@ -601,8 +630,8 @@ export class Game {
       this.bossTimer -= dt;
       const bossAlive = this.mobs.some((m) => m.boss);
       if (!bossAlive) {
-        this.tryAchieve(`clear${this.wave}`);
-        if (this.wave >= WAVE.total && !this.isPvp) { this.win(); return; }
+        if (!this.opts.stageId) this.tryAchieve(`clear${this.wave}`);
+        if (this.wave >= this.totalWaves) { this.win(); return; }
         this.waveState = 'rest';
         this.restTimer = WAVE.restBetween;
       } else if (this.bossTimer <= 0) {
@@ -656,9 +685,9 @@ export class Game {
         if (d <= range && d < bestD) { bestD = d; best = m; }
       }
       if (!best) continue;
-      const crit = Math.random() < SKILLS.critChance;
+      const crit = Math.random() < this.critChance(u);
       const dmg = this.unitDamage(u, best) * (crit ? SKILLS.critMult : 1);
-      u.cooldown = 1.0;
+      u.cooldown = UNIT_BY_ID[u.job].cooldown;
       u.flash = 0.1;
       this.emit('shoot', u.job);
       // 투사체: 거리에 비례한 비행 시간 (시각 전용)
@@ -702,35 +731,86 @@ export class Game {
     if (m.hp <= 0) this.killMob(m);
   }
 
+  private critChance(u: Unit): number {
+    if (u.job === 'ranger' && u.gradeIndex >= SKILL_FROM_INDEX) {
+      const c = u.gradeIndex >= FULL_RANGE_FROM_INDEX ? SKILLS.ranger.critChanceHigh : SKILLS.ranger.critChance;
+      return Math.min(0.8, c * perkMult(this.collectionLevel(u.job)));
+    }
+    return SKILLS.critChance;
+  }
+
+  // 범위 피해 (대상 제외)
+  private splashAround(u: Unit, target: Mob, r: number, ratio: number): void {
+    for (const m of this.mobs) {
+      if (m === target || m.dead) continue;
+      if (Math.hypot(m.x - target.x, m.y - target.y) <= r) this.hit(m, this.unitDamage(u, m) * ratio, false);
+    }
+  }
+
+  private slowMob(m: Mob, pct: number, dur: number): void {
+    if (m.dead) return;
+    m.slowPct = m.slow > 0 ? Math.max(m.slowPct, pct) : pct;
+    m.slow = Math.max(m.slow, dur);
+  }
+
   private applySkill(u: Unit, target: Mob, range: number): void {
     const high = u.gradeIndex >= FULL_RANGE_FROM_INDEX; // 전설 이상 강화
-    if (u.job === 'archer') {
-      const n = high ? SKILLS.archer.extraTargetsHigh : SKILLS.archer.extraTargets;
-      const others = this.mobs
-        .filter((m) => m !== target && !m.dead && Math.hypot(m.x - u.x, m.y - u.y) <= range)
-        .sort((a, b) => Math.hypot(a.x - target.x, a.y - target.y) - Math.hypot(b.x - target.x, b.y - target.y))
-        .slice(0, n);
-      for (const m of others) {
-        const dur = 0.12;
-        this.addEffect({ type: 'proj', x1: u.x, y1: u.y - 8, x2: m.x, y2: m.y, job: u.job, grade: u.gradeIndex, ttl: dur, dur });
-        this.hit(m, this.unitDamage(u, m) * SKILLS.archer.ratio, false);
-      }
-    } else if (u.job === 'wizard') {
-      const r = high ? SKILLS.wizard.radiusHigh : SKILLS.wizard.radius;
-      this.addEffect({ type: 'splash', x: target.x, y: target.y, ttl: 0.35, r });
-      for (const m of this.mobs) {
-        if (m === target || m.dead) continue;
-        if (Math.hypot(m.x - target.x, m.y - target.y) <= r) {
-          this.hit(m, this.unitDamage(u, m) * SKILLS.wizard.ratio, false);
+    const perk = perkMult(this.collectionLevel(u.job));  // 컬렉션 Lv5/10 퍽
+    switch (u.job) {
+      case 'archer': {
+        const n = (high ? SKILLS.archer.extraTargetsHigh : SKILLS.archer.extraTargets) + (perk > 1.5 ? 1 : 0);
+        const others = this.mobs
+          .filter((m) => m !== target && !m.dead && Math.hypot(m.x - u.x, m.y - u.y) <= range)
+          .sort((a, b) => Math.hypot(a.x - target.x, a.y - target.y) - Math.hypot(b.x - target.x, b.y - target.y))
+          .slice(0, n);
+        for (const m of others) {
+          const dur = 0.12;
+          this.addEffect({ type: 'proj', x1: u.x, y1: u.y - 8, x2: m.x, y2: m.y, job: u.job, grade: u.gradeIndex, ttl: dur, dur });
+          this.hit(m, this.unitDamage(u, m) * SKILLS.archer.ratio * perk, false);
         }
+        break;
       }
-    } else {
-      const pct = high ? SKILLS.warrior.slowPctHigh : SKILLS.warrior.slowPct;
-      if (!target.dead) {
-        target.slow = SKILLS.warrior.dur;
-        target.slowPct = Math.max(target.slow > 0 ? target.slowPct : 0, pct);
+      case 'wizard': {
+        const r = high ? SKILLS.wizard.radiusHigh : SKILLS.wizard.radius;
+        this.addEffect({ type: 'splash', x: target.x, y: target.y, ttl: 0.35, r, color: '#b48cff' });
+        this.splashAround(u, target, r, SKILLS.wizard.ratio * perk);
+        break;
       }
-      this.addEffect({ type: 'slash', x: target.x, y: target.y, ttl: 0.25, seed: Math.random() * Math.PI });
+      case 'bomber': {
+        const r = high ? SKILLS.bomber.radiusHigh : SKILLS.bomber.radius;
+        this.addEffect({ type: 'splash', x: target.x, y: target.y, ttl: 0.45, r, color: '#ff7a3d' });
+        this.splashAround(u, target, r, SKILLS.bomber.ratio * perk);
+        this.shake = Math.max(this.shake, 1.5);
+        break;
+      }
+      case 'frost': {
+        const r = high ? SKILLS.frost.radiusHigh : SKILLS.frost.radius;
+        const pct = Math.min(0.7, (high ? SKILLS.frost.slowPctHigh : SKILLS.frost.slowPct) * (1 + (perk - 1) * 0.5));
+        this.addEffect({ type: 'splash', x: target.x, y: target.y, ttl: 0.4, r, color: '#7fe0ff' });
+        for (const m of this.mobs) {
+          if (Math.hypot(m.x - target.x, m.y - target.y) <= r) this.slowMob(m, pct, SKILLS.frost.dur);
+        }
+        break;
+      }
+      case 'warrior': {
+        const pct = Math.min(0.7, (high ? SKILLS.warrior.slowPctHigh : SKILLS.warrior.slowPct) * (1 + (perk - 1) * 0.5));
+        this.slowMob(target, pct, SKILLS.warrior.dur);
+        this.addEffect({ type: 'slash', x: target.x, y: target.y, ttl: 0.25, seed: Math.random() * Math.PI });
+        break;
+      }
+      case 'assassin': {
+        const th = (high ? SKILLS.assassin.executeHigh : SKILLS.assassin.execute) * perk;
+        if (!target.dead && !target.boss && target.hp / target.maxHp <= th) {
+          this.addEffect({ type: 'slash', x: target.x, y: target.y, ttl: 0.3, seed: Math.random() * Math.PI });
+          this.hit(target, target.hp + 1, true);
+        }
+        break;
+      }
+      default:
+        // ranger(치명타)·paladin(보스 피해)은 critChance/unitDamage 에서 처리
+        if (u.job === 'paladin' || u.job === 'ranger') {
+          this.addEffect({ type: 'slash', x: target.x, y: target.y, ttl: 0.2, seed: Math.random() * Math.PI });
+        }
     }
   }
 
@@ -742,7 +822,7 @@ export class Game {
     const gained = Math.round(base * goldMult);
     this.gold += gained;
     this.kills += 1;
-    addDailyProgress('kills', 1);
+    this.progress('kills');
     this.addEffect({ type: 'pop', x: m.x, y: m.y, ttl: m.boss ? 0.8 : 0.45, boss: m.boss, seed: Math.random() * 6.28 });
     if (m.boss || this.effects.length < 140) {
       this.addEffect({ type: 'gold', x: m.x, y: m.y - 10, ttl: 0.8, value: gained });
@@ -767,18 +847,35 @@ export class Game {
     if (this.over) return;
     this.over = true;
     this.cleared = true;
-    this.tryAchieve('clear50');
-    this.finish('50 웨이브 클리어!');
+    if (!this.opts.stageId) this.tryAchieve('clear50');
+    this.finish(this.opts.stageId ? `스테이지 ${this.opts.stageId} 클리어!` : '50 웨이브 클리어!');
   }
+  revived = false;
+  /** 부활 (보상형 광고): 일반 몹 정리 + 보스 시간 연장. 판당 1회 */
+  canRevive(): boolean {
+    return this.over && !this.cleared && !this.isPvp && !this.revived;
+  }
+  revive(): boolean {
+    if (!this.canRevive()) return false;
+    this.revived = true;
+    this.over = false;
+    for (const m of this.mobs) if (!m.boss) this.addEffect({ type: 'pop', x: m.x, y: m.y, ttl: 0.45, boss: false, seed: Math.random() * 6.28 });
+    this.mobs = this.mobs.filter((m) => m.boss);
+    if (this.waveState === 'waiting_boss') this.bossTimer = Math.max(this.bossTimer, 45);
+    this.shake = 12;
+    this.pushLog('✨ 부활! 필드가 정리되었습니다');
+    return true;
+  }
+
   /** PvP 결과 확정 (상대 패배/이탈 시 승리, 서버 판정 등) */
   pvpEnd(won: boolean, reason: string): void {
     if (this.over) return;
     this.over = true;
     this.cleared = won;
-    this.emit('gameover', { wave: this.wave, reason, cleared: won, pvp: { won } });
+    this.emit('gameover', { wave: this.wave, reason, cleared: won, pvp: { won }, peakMobs: this.peakMobs });
   }
   finish(reason: string): void {
-    const d: GameOverData = { wave: this.wave, reason, cleared: this.cleared };
+    const d: GameOverData = { wave: this.wave, reason, cleared: this.cleared, peakMobs: this.peakMobs };
     if (this.isPvp) d.pvp = { won: false }; // PvP 에서 내 필드가 무너지면 패배
     this.emit('gameover', d);
   }

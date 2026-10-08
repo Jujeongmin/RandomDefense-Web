@@ -7,27 +7,24 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>랜덤 디펜스</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Jua&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="app">
-      <!-- 메인 화면 -->
-      <div id="main-menu">
-        <div class="menu-inner">
-          <h1 class="game-title">랜덤 디펜스</h1>
-          <div class="menu-crystals">💎 <span id="menu-crystal-amount">0</span></div>
-          <button id="menu-start" class="menu-btn primary">게임 시작</button>
-          <button id="menu-shop" class="menu-btn">🛒 상점</button>
-          <button id="menu-lab" class="menu-btn">🔬 연구소</button>
-          <div class="menu-record">최고 기록: <span id="menu-best">0</span> 웨이브</div>
-        </div>
-      </div>
+      <!-- 로비 (menu.ts 가 내용을 그림) -->
+      <div id="main-menu" class="hidden"></div>
 
       <div id="game-frame" class="hidden">
         <!-- 상단 바 -->
         <header id="topbar">
           <div class="top-left">
             <div id="mob-portrait" class="frame-sprite"></div>
-            <span id="mob-race">-</span>
+            <div>
+              <div id="mob-race">-</div>
+              <div id="stage-label"></div>
+            </div>
           </div>
           <div class="top-center">
             <div id="wave-label">Wave 1</div>
@@ -40,15 +37,28 @@
           </div>
         </header>
 
+        <!-- PvP: 상대 상태 -->
+        <div id="pvp-hud" class="hidden">
+          <canvas id="opp-canvas" width="72" height="72"></canvas>
+          <div class="opp-info">
+            <div class="opp-name"><span id="opp-nick">상대</span> <span id="opp-trophy" class="trophy"></span></div>
+            <div class="opp-bar"><div id="opp-fill"></div><span id="opp-count">0 / 100</span></div>
+            <div class="opp-sub" id="opp-sub">Wave 1 · 유닛 0</div>
+          </div>
+        </div>
+
         <!-- 전장 -->
         <main id="battlefield">
           <canvas id="game-canvas"></canvas>
           <div id="summon-log"></div>
           <div id="gold-badge"><span class="coin">🪙</span><span id="gold-amount">100</span></div>
           <div id="mythic-banner" class="hidden"></div>
+          <div id="countdown" class="hidden"></div>
+          <div id="coach" class="hidden"></div>
           <div id="debug-panel" class="hidden">
             <button id="debug-mythic">🐛 신화</button>
             <button id="debug-eternal">🐛 태초</button>
+            <button id="debug-gold">🐛 +500G</button>
           </div>
         </main>
 
@@ -60,13 +70,20 @@
 
         <!-- 하단 조작부 -->
         <section id="controls">
+          <div id="attack-row" class="hidden">
+            <button id="btn-attack-0" class="attack-btn">⚔ 몹 무리 <span>🪙40</span></button>
+            <button id="btn-attack-1" class="attack-btn elite">☠ 정예 몹 <span>🪙160</span></button>
+          </div>
           <div class="control-buttons">
-            <button id="btn-sell-panel" class="side-btn">🛒<br />판매</button>
-            <button id="btn-summon" class="summon-btn">
-              <span class="summon-title">소환</span>
-              <span class="summon-cost"><span class="coin">🪙</span>20</span>
-            </button>
-            <button id="btn-menu" class="side-btn">🏠<br />메인</button>
+            <button id="btn-sell-panel" class="side-btn">🧙<br />영웅<span id="merge-dot" class="dot hidden"></span></button>
+            <div class="summon-wrap">
+              <div id="ticket-row"></div>
+              <button id="btn-summon" class="summon-btn">
+                <span class="summon-title">소환</span>
+                <span class="summon-cost"><span class="coin">🪙</span>20</span>
+              </button>
+            </div>
+            <button id="btn-menu" class="side-btn">🏠<br />나가기</button>
           </div>
           <div id="unit-stacks"></div>
         </section>
@@ -74,10 +91,10 @@
 
       <!-- 오버레이 패널들 -->
       <div id="sell-panel" class="overlay hidden"></div>
-      <div id="lab-panel" class="overlay hidden"></div>
-      <div id="shop-panel" class="overlay hidden"></div>
-      <div id="quest-panel" class="overlay hidden"></div>
+      <div id="panel" class="overlay hidden"></div>
+      <div id="modal" class="overlay hidden"></div>
       <div id="gameover-panel" class="overlay hidden"></div>
+      <div id="toast-layer"></div>
     </div>
 
     <script type="module" src="./src/main.ts"></script>

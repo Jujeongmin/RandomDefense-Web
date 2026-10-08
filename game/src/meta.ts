@@ -36,6 +36,12 @@ function freshMeta(): MetaData {
     grantedPurchases: [],
     oneTime: {},
     pvp: { trophies: 0, wins: 0, losses: 0, streak: 0 },
+    units: { archer: 1, wizard: 1, warrior: 1 },
+    deck: ['archer', 'wizard', 'warrior'],
+    stages: {},
+    tutorial: 0,
+    nick: `용사${Math.floor(1000 + Math.random() * 9000)}`,
+    adRemoved: false,
   };
 }
 
@@ -53,6 +59,10 @@ function load(): MetaData {
   m.monthly = Object.assign(fresh.monthly, m.monthly || {});
   m.pvp = Object.assign(fresh.pvp, m.pvp || {});
   m.oneTime = m.oneTime || {};
+  m.units = Object.assign(fresh.units, m.units || {});
+  m.stages = m.stages || {};
+  if (!Array.isArray(m.deck) || !m.deck.length) m.deck = fresh.deck;
+  m.deck = m.deck.filter((j) => m.units[j]); // 미해금 유닛 제거
   m.grantedPurchases = Array.isArray(m.grantedPurchases) ? m.grantedPurchases : [];
   // 시즌이 바뀌면 시즌 패스 진행 초기화 (프리미엄은 시즌 단위 상품)
   if (!m.season || m.season.id !== currentSeasonId()) m.season = fresh.season;
@@ -63,6 +73,13 @@ function load(): MetaData {
     m.daily.claimed = Object.assign(fresh.daily.claimed, m.daily.claimed);
   }
   return m;
+}
+
+/** 플랫폼 비동기 초기화(서버 저장본 로드) 후 메타를 다시 읽어 같은 객체에 반영 */
+export function reloadMeta(): void {
+  const fresh = load();
+  for (const k of Object.keys(meta) as (keyof MetaData)[]) delete (meta as Partial<MetaData>)[k];
+  Object.assign(meta, fresh);
 }
 
 export function saveMeta(): void {
